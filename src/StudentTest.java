@@ -63,7 +63,7 @@ public class StudentTest {
         Heap heap = new Heap(true, true);
         heap.insert(30, "X");
         heap.insert(40, "Y");
-        Heap.HeapNode n3 = heap.insert(50, "Z");
+        Heap.HeapItem n3 = heap.insert(50, "Z");
         heap.decreaseKey(n3, 25); // new key = 25
         return heap.findMin() != null && heap.findMin().key == 25;
     }
@@ -71,7 +71,7 @@ public class StudentTest {
     private static boolean testDeleteNode() {
         Heap heap = new Heap(true, true);
         heap.insert(15, "P");
-        Heap.HeapNode n2 = heap.insert(7, "Q");
+        Heap.HeapItem n2 = heap.insert(7, "Q");
         heap.insert(25, "R");
         heap.delete(n2);
         return heap.findMin() != null && heap.findMin().key == 15;
