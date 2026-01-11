@@ -110,15 +110,30 @@ public class Heap {
      * Insert (key,info) into the heap and return the newly generated HeapNode.
      */
     public HeapItem insert(int key, String info) {
-        return null; // should be replaced by student code
-        // needed to use "meld" function
+        HeapItem item = new HeapItem();
+        item.key = key;
+        item.info = info;
+
+        HeapNode node = new HeapNode();
+        node.item = item;
+        node.rank = 0;
+        item.node = node;
+        makeSingleton(node);
+
+        Heap insert_heap = new Heap(this.lazyMelds, this.lazyDecreaseKeys);
+        insert_heap.min = node.item;
+        insert_heap.heap_size = 1;
+        insert_heap.num_trees = 1;
+
+        this.meld(insert_heap);
+        return item;
     }
 
     /**
      * Return the minimal HeapNode, null if empty.
      */
     public HeapItem findMin() {
-        return min; // should be replaced by student code
+        return min;
     }
 
     /**
@@ -196,8 +211,7 @@ public class Heap {
     /**
      * Return the number of elements in the heap
      */
-    public int size()
-    {
+    public int size() {
         return heap_size;
     }
 
@@ -251,7 +265,8 @@ public class Heap {
         public HeapNode next;
         public HeapNode prev;
         public HeapNode parent;
-        public int rank;
+        public int rank = 0;
+        public boolean marked = false;
     }
 
     /**
