@@ -1,149 +1,82 @@
 /**
  * Heap
- * <p>
- * An implementation of Fibonacci heap over positive integers
- * with the possibility of not performing lazy melds and
- * the possibility of not performing lazy decrease keys.
+ *
+ * An implementation of Fibonacci heap over (non-negative) integers
+ * with two optional behaviors:
+ *  - lazyMelds:
+ *      true  -> like Fibonacci heap: meld is O(1) (just concatenate root lists)
+ *      false -> after meld, perform successive linking (consolidation)
+ *  - lazyDecreaseKeys:
+ *      true  -> like Fibonacci heap: decreaseKey uses (cascading) cuts
+ *      false -> like (lazy) binomial heaps: decreaseKey uses heapifyUp (swapping items)
+ *
+ * Notes:
+ *  - Keys are stored in HeapItem (not in HeapNode).
+ *  - We keep back pointers HeapItem.node consistent under swaps.
+ *  - We do NOT use any Java collection library data structures.
  */
 public class Heap {
+
     public final boolean lazyMelds;
     public final boolean lazyDecreaseKeys;
-    public HeapItem min = null;
 
-    private int total_cuts = 0;
-    private int total_links = 0;
-    private int total_heapify_cost = 0;
-    private int heap_size = 0;
-    private int num_marked_nodes = 0;
-    private int num_trees = 0;
+    /** Pointer to the minimal item in the heap (null if empty). */
+    public HeapItem min;
+
+    /* =====================
+     * Internal heap fields
+     * ===================== */
+
+    /** A pointer to an arbitrary root in the circular root list (null if empty). */
+    private HeapNode firstRoot;
+
+    /** Number of items in the heap. */
+    private int size;
+
+    /** Number of trees (roots) in the heap. */
+    private int numTrees;
+
+    /** Number of marked nodes (only possible when lazyDecreaseKeys==true). */
+    private int numMarked;
+
+    /** Total links performed since creation. */
+    private int totalLinks;
+
+    /** Total cuts performed since creation (does NOT include cuts done inside deleteMin). */
+    private int totalCuts;
+
+    /** Total heapifyUp swap cost accumulated since creation (only when lazyDecreaseKeys==false). */
+    private int totalHeapifyCosts;
+
 
     /**
      * Constructor to initialize an empty heap.
+     * Runs in O(1).
      */
     public Heap(boolean lazyMelds, boolean lazyDecreaseKeys) {
         this.lazyMelds = lazyMelds;
         this.lazyDecreaseKeys = lazyDecreaseKeys;
-        // student code can be added here
         this.min = null;
-        this.heap_size = 0;
-        this.num_trees = 0;
-
-        this.total_cuts = 0;
-        this.total_links = 0;
-        this.total_heapify_cost = 0;
-        this.num_marked_nodes = 0;
+        this.firstRoot = null;
+        this.size = 0;
+        this.numTrees = 0;
+        this.numMarked = 0;
+        this.totalLinks = 0;
+        this.totalCuts = 0;
+        this.totalHeapifyCosts = 0;
     }
 
-    // Make node a singleton circular list: next=prev=self
-    private static void makeCircular(HeapNode x) {
-        x.next = x;
-        x.prev = x;
-        //can we add x.parent=x.child=null??
-    }
-
-
-    /**
-     * Detach x's children list from x and return the head of that list (or null).
-     * Also sets each child's parent to null.
-     * Does NOT change children's next/prev structure.
-     */
-    private static HeapNode detachChildren(HeapNode x) {
-        if (x == null || x.child == null) return null;
-
-        HeapNode start = x.child;
-        HeapNode c = start;
-
-        do {
-            c.parent = null;
-            c = c.next;
-        } while (c != start);
-
-        x.child = null;
-        x.rank = 0;   // OK only because we detached all children from x
-        return start;
-    }
-
-
-    private static void detachFromList(HeapNode x) {
-        if (x == null) return;
-        if (x.next == x) return;  // כבר singleton
-        HeapNode p = x.prev;
-        HeapNode n = x.next;
-        p.next = n;
-        n.prev = p;
-        makeCircular(x);
-    }
-
-
-
-    // Insert node x into the circular list whose "a" is a member.
-    // We insert x right after a.
-    private static void spliceAfter(HeapNode a, HeapNode x) {
-        HeapNode b = a.next;
-        a.next = x;
-        x.prev = a;
-        x.next = b;
-        b.prev = x;
-    }
-
-    // Remove node x from its circular list. After removal, x becomes singleton.
-    private static void detach(HeapNode x) {
-        HeapNode p = x.prev;
-        HeapNode n = x.next;
-        p.next = n;
-        n.prev = p;
-        makeCircular(x);
-    }
-
-    // Concatenate two circular lists given representatives a and b.
-    // Returns a representative of the merged list (we return a).
-    // If one is null -> returns the other.
-    private static HeapNode concatLists(HeapNode a, HeapNode b) {
-        if (a == null) return b;
-        if (b == null) return a;
-
-        HeapNode aNext = a.next;
-        HeapNode bPrev = b.prev;
-
-        // connect a <-> b
-        a.next = b;
-        b.prev = a;
-
-        // connect bPrev <-> aNext
-        bPrev.next = aNext;
-        aNext.prev = bPrev;
-
-        return a;
-    }
-
-    // Update min pointer given a root list representative
-    private void recomputeMinFromRoots() {
-        if (findMin() == null) {
-            min = null;
-            return;
-        }
-        HeapNode start = findMin().node;
-        HeapNode cur = start;
-        HeapNode best = start;
-        do {
-            if (cur.item.key < best.item.key) best = cur;
-            cur = cur.next;
-        } while (cur != start);
-        min = best.item;
-    }
-
-    // Compare-and-update min using one node (O(1))
-    private void considerAsMin(HeapNode x) {
-        if (x == null) return;
-        if (min == null || x.item.key < min.key) {
-            min = x.item;
-        }
-    }
 
     /**
      * pre: key > 0
-     * <p>
-     * Insert (key,info) into the heap and return the newly generated HeapNode.
+     *
+     * Insert (key,info) into the heap and return the newly generated HeapItem.
+     *
+     * Implementation requirement (as in the PDF): insert is done via meld.
+     *
+     * Worst-case time:
+     *  - lazyMelds=true  : O(1)
+     *  - lazyMelds=false : O(log n) due to consolidation in meld
      */
     public HeapItem insert(int key, String info) {
         HeapItem item = new HeapItem();
@@ -152,458 +85,578 @@ public class Heap {
 
         HeapNode node = new HeapNode();
         node.item = item;
-        node.rank = 0;
         item.node = node;
-        makeCircular(node);
 
-        Heap insert_heap = new Heap(this.lazyMelds, this.lazyDecreaseKeys);
-        insert_heap.min = node.item;
-        insert_heap.heap_size = 1;
-        insert_heap.num_trees = 1;
+        node.child = null;
+        node.parent = null;
+        node.rank = 0;
+        node.marked = false;
+        node.next = node;
+        node.prev = node;
 
-        this.meld(insert_heap);
+        // Build a singleton heap and meld it in (per assignment).
+        Heap singleton = new Heap(this.lazyMelds, this.lazyDecreaseKeys);
+        singleton.firstRoot = node;
+        singleton.min = item;
+        singleton.size = 1;
+        singleton.numTrees = 1;
+
+        this.meld(singleton);
         return item;
     }
 
+
     /**
-     * Return the minimal HeapNode, null if empty.
+     * Return the minimal item, or null if empty.
+     * Runs in O(1).
      */
     public HeapItem findMin() {
-        return min;
+        return this.min;
     }
 
 
+    /**
+     * Delete the minimal item.
+     *
+     * Worst-case time: O(n) (because successive linking can be linear in worst case).
+     * Amortized time (Fibonacci / lazy binomial style): O(log n).
+     */
     public void deleteMin() {
-        if (min == null) return;
-
-        HeapNode z = min.node;
-        int zRank = z.rank;
-        HeapNode childEntry = z.child;
-
-        if (heap_size == 1) {
-            min = null;
-            heap_size = 0;
-            num_trees = 0;
-            num_marked_nodes = 0;
+        if (this.min == null) {
             return;
         }
 
-        HeapNode rootsEntry = (z.next != z) ? z.next : null;
-        detachFromList(z);
+        HeapNode z = this.min.node;
+        int zRank = z.rank;
 
-        // להפוך ילדים לשורשים + unmark (כמו שיש לך)
-        if (childEntry != null) {
-            HeapNode c = childEntry;
+        // If this was the only node in the heap.
+        if (this.size == 1) {
+            this.min = null;
+            this.firstRoot = null;
+            this.size = 0;
+            this.numTrees = 0;
+            this.numMarked = 0; // should already be 0
+            return;
+        }
+
+        // Remove z from the root list.
+        removeRoot(z);
+        this.size -= 1;
+        this.numTrees -= 1; // removing z tree
+
+        // Add z's children to the root list (WITHOUT increasing totalCuts!).
+        if (z.child != null) {
+            // Detach child list from z.
+            HeapNode childList = z.child;
+            z.child = null;
+            z.rank = 0;
+
+            // Unparent all children and unmark them.
+            HeapNode c = childList;
             do {
                 c.parent = null;
-                if (c.marked) { c.marked = false; num_marked_nodes--; }
-                c = c.next;
-            } while (c != childEntry);
-        }
-
-        // ניקוי z (בסדר)
-        z.child = null;
-        z.parent = null;
-        z.rank = 0;
-        z.marked = false;
-
-        heap_size--;
-
-        HeapNode entry;
-        if (rootsEntry == null) entry = childEntry;
-        else {
-            entry = rootsEntry;
-            if (childEntry != null) entry = concatLists(entry, childEntry);
-        }
-
-        //  חדש: עדכון num_trees לפני consolidate
-        num_trees = num_trees - 1 + zRank;
-
-        consolidate(entry);
-    }
-
-
-
-
-    private void consolidate(HeapNode entry) {
-        if (entry == null) {
-            min = null;
-            return;
-        }
-
-        // 1) to-buckets
-        HeapNode[] B = toBuckets(entry);
-
-        // 2) from-buckets
-        HeapNode newMinNode = fromBuckets(B);
-
-        min = (newMinNode == null) ? null : newMinNode.item;
-    }
-
-    private HeapNode[] toBuckets(HeapNode entry) {
-        // גודל דליים: מספיק log2(n)+5 (זה upper bound בטוח)
-        int max = 1;
-        int t = heap_size;
-        while (t > 0)
-        {
-            max++;
-            t >>= 1;
-        }
-
-        max += 5;
-
-        HeapNode[] B = new HeapNode[max];
-        for (int i = 0; i < B.length; i++)
-            B[i] = null;
-
-        HeapNode x = entry;
-        int roots = num_trees;   // מספר השורשים לפני פירוק הרשימה
-
-        for (int i = 0; i < roots; i++) {
-            HeapNode next = x.next;   // next של "הרשימה הישנה" לפני שננתק
-            detachFromList(x);        // עכשיו x singleton
-
-            HeapNode y = x;
-
-            while (true) {
-                int r = y.rank;
-                if (r >= B.length) {
-                    HeapNode[] B2 = new HeapNode[r + 10];
-                    System.arraycopy(B, 0, B2, 0, B.length);
-                    B = B2;
+                if (c.marked) {
+                    c.marked = false;
+                    this.numMarked -= 1;
                 }
-                if (B[r] == null) break;
+                c = c.next;
+            } while (c != childList);
 
-                HeapNode other = B[r];
-                B[r] = null;
-                y = link(y, other);
-            }
-
-            B[y.rank] = y;
-
-            x = next;
+            // Splice child roots into the root list.
+            spliceRootList(childList);
+            this.numTrees += zRank; // each child becomes a new tree
         }
 
-
-        return B;
+        // Consolidate (successive linking) is ALWAYS required after deleteMin.
+        successiveLinking();
     }
-
-    private HeapNode fromBuckets(HeapNode[] B) {
-        HeapNode x = null;          // זה יהיה "entry" לרשימת השורשים החדשה
-        HeapNode minNode = null;
-
-        int trees = 0;
-
-        for (int i = 0; i < B.length; i++) {
-            HeapNode b = B[i];
-            if (b == null) continue;
-
-            trees++;
-
-            // אם זו ההתחלה, בונים רשימה חדשה עם b בלבד
-            if (x == null) {
-                x = b;
-                makeCircular(x);
-            } else {
-                spliceAfter(x, b);   // insert-after(x, B[i]) כמו בשקופית
-                // בשקופית: אם B[i].key < x.key אז x <- B[i]
-                // אצלנו x זה רק entry, מינימום ננהל בנפרד
-            }
-
-            if (minNode == null || b.item.key < minNode.item.key) {
-                minNode = b;
-            }
-        }
-
-        // אם את מנהלת numTrees:
-        num_trees = trees;
-
-        return minNode;
-    }
-
-    private HeapNode link(HeapNode a, HeapNode b) {
-        // נוודא ש-a הוא הקטן
-        if (b.item.key < a.item.key) {
-            HeapNode tmp = a; a = b; b = tmp;
-        }
-
-        // b נהיה ילד של a
-        b.parent = a;
-
-        // שורש לא אמור להיות מסומן; אם היה—מבטלים
-        if (b.marked) {
-            System.out.println("possibly an error, root was marked");
-            b.marked = false;
-            num_marked_nodes--;
-        }
-
-        // הוספת b לרשימת הילדים של a
-        if (a.child == null) {
-            a.child = b;
-            makeCircular(b);
-        } else {
-            spliceAfter(a.child, b);
-        }
-
-        a.rank++;
-        total_links++;
-        return a;
-    }
-
-    //swap 2 items
-    private void swapItems(HeapNode a, HeapNode b) {
-        // This must be used only in non-lazy decreaseKey mode (heapify-up).
-        HeapItem tmp = a.item;
-        a.item = b.item;
-        b.item = tmp;
-
-        // IMPORTANT: keep back pointers consistent
-        a.item.node = a;
-        b.item.node = b;
-    }
-
-    private void heapifyUp(HeapNode x) {
-        while (x.parent != null && x.item.key < x.parent.item.key) {
-            swapItems(x, x.parent);
-            total_heapify_cost++;   // count swaps as heapify cost
-            x = x.parent;           // continue with the item that moved up
-        }
-    }
-
-    private void removeFromChildList(HeapNode parent, HeapNode x) {
-        // x is a child of parent
-        if (parent.child == x) {
-            if (x.next == x) {
-                parent.child = null;
-            } else {
-                parent.child = x.next;
-            }
-        }
-        detachFromList(x);     // IMPORTANT: our fixed detach (no rank/child touching)
-        parent.rank--;
-        x.parent = null;
-    }
-
-    private void addToRootList(HeapNode x) {
-        // x is a singleton circular list at this point
-        if (min == null) {
-            // theoretically can happen only if heap was empty, but keep safe
-            min = x.item;
-            num_trees = 1;
-            return;
-        }
-        concatLists(min.node, x);
-        num_trees++;
-        considerAsMin(x);
-    }
-
-    private void cut(HeapNode x, HeapNode parent) {
-        removeFromChildList(parent, x);
-
-        // unmark x if needed
-        if (x.marked) {
-            x.marked = false;
-            num_marked_nodes--;
-        }
-
-        addToRootList(x);
-        total_cuts++;
-    }
-
-    private void cascadingCut(HeapNode y) {
-        HeapNode z = y.parent;
-        if (z == null) {
-            // y is a root: roots should not be marked
-            if (y.marked) {
-                y.marked = false;
-                num_marked_nodes--;
-            }
-            return;
-        }
-
-        if (!y.marked) {
-            y.marked = true;
-            num_marked_nodes++;
-        } else {
-            cut(y, z);
-            cascadingCut(z);
-        }
-    }
-
 
 
     /**
      * pre: 0<=diff<=x.key
-     * <p>
+     *
      * Decrease the key of x by diff and fix the heap.
+     *
+     * Worst-case time:
+     *  - lazyDecreaseKeys=true  : O(n) (cascading cuts may cut many nodes)
+     *  - lazyDecreaseKeys=false : O(log n) (heapifyUp may bubble to root)
      */
-
     public void decreaseKey(HeapItem x, int diff) {
-        if (x == null || x.node == null || diff <= 0) return;
+        if (x == null || x.node == null) return;
 
         x.key -= diff;
-        HeapNode node = x.node;
+        HeapNode v = x.node;
+        HeapNode p = v.parent;
 
-        // always update min candidate
-        considerAsMin(node);
-
-        if (!lazyDecreaseKeys) {
-            heapifyUp(node);
-            // min might have changed via swaps
-            considerAsMin(x.node);
+        // אם אין הפרה מול אבא → לא עושים כלום מעבר,
+        // אבל גם לא נעדכן min אם v לא שורש!
+        if (p == null || x.key >= p.item.key) {
+            if (v.parent == null && (this.min == null || x.key <= this.min.key)) {
+                this.min = x;
+            }
             return;
         }
 
-        // lazyDecreaseKeys == true: use cuts
-        HeapNode parent = node.parent;
-        if (parent == null) return; // node is a root, we're done
+        if (this.lazyDecreaseKeys) {
+            cascadingCut(v); // אחרי זה v הופך לשורש
+            if (v.parent == null && x.key <= this.min.key) {
+                this.min = x;
+            }
+        } else {
+            int swaps = heapifyUp(v);
+            this.totalHeapifyCosts += swaps;
 
-        if (node.item.key >= parent.item.key) return; // heap order not violated
-
-        cut(node, parent);
-        cascadingCut(parent);
+            // x אולי טיפס (HeapItem נשאר אותו אובייקט), נעדכן min רק אם הוא הגיע לשורש
+            if (x.node.parent == null && x.key <= this.min.key) {
+                this.min = x;
+            }
+        }
     }
 
 
+
     /**
-     * Delete the x from the heap.
+     * Delete x from the heap.
+     *
+     * Required by assignment: delete implemented via decreaseKey + deleteMin.
+     * We force x to become the chosen minimum even if there are duplicate keys,
+     * by setting min to x when its key ties the minimum.
      */
     public void delete(HeapItem x) {
-        if (x == null || x.node == null || heap_size == 0) return;
+        if (x == null || x.node == null || this.min == null) return;
 
-        if (min != null && x == min) {
+        if (x == this.min) {
             deleteMin();
             return;
         }
 
-        // Choose a target strictly smaller than current min.key, computed in long to avoid overflow
-        long minKey = (min == null) ? 0L : (long) min.key;
-        long targetLong = minKey - 1L;
+        // מורידים אותו למפתח 0
+        decreaseKey(x, x.key);
 
-        // Clamp target to int range
-        if (targetLong < (long) Integer.MIN_VALUE) targetLong = (long) Integer.MIN_VALUE;
-
-        long diffLong = (long) x.key - targetLong;
-
-        // We need diff > 0 for decreaseKey
-        if (diffLong <= 0) {
-            // x is already <= target; still try to force it down a bit if possible
-            // If x.key == Integer.MIN_VALUE, we can't decrease further in int, but that case
-            // is extremely unlikely in the course tests.
-            if (x.key == Integer.MIN_VALUE) {
-                // fallback: just deleteMin if somehow x became min already, otherwise no-op
-                if (min != null && x.key == min.key) deleteMin();
-                return;
+        // אם עדיין לא שורש – נכפה שהוא יהפוך לשורש כדי ש-min יוכל להיות הוא
+        if (x.node != null && x.node.parent != null) {
+            if (this.lazyDecreaseKeys) {
+                // Cut "forced": נבצע cascadingCut גם אם אין הפרה
+                cascadingCut(x.node);
+            } else {
+                // במקרה heapifyUp, נכפה טיפוס גם במקרי שוויון (<=)
+                int extra = heapifyUpForceEqual(x.node);
+                this.totalHeapifyCosts += extra;
             }
-            diffLong = 1;
         }
 
-        // Clamp diff to int range (diff is expected to be safe in normal test ranges)
-        int diff = (diffLong > (long) Integer.MAX_VALUE) ? Integer.MAX_VALUE : (int) diffLong;
+        // עכשיו הוא שורש ולכן אפשר לכוון אליו min בלי לשבור אינווריאנטים
+        if (x.node != null && x.node.parent == null) {
+            this.min = x;
+        }
 
-        decreaseKey(x, diff);
         deleteMin();
     }
 
 
 
-
     /**
-     * Meld the heap with heap2
-     * pre: heap2.lazyMelds = this.lazyMelds AND heap2.lazyDecreaseKeys = this.lazyDecreaseKeys
+     * Meld the heap with heap2.
+     * pre: heap2.lazyMelds == this.lazyMelds AND heap2.lazyDecreaseKeys == this.lazyDecreaseKeys
+     *
+     * Worst-case time:
+     *  - lazyMelds=true  : O(1)
+     *  - lazyMelds=false : O(n) worst-case due to successiveLinking
      */
     public void meld(Heap heap2) {
-        if (heap2 == null || heap2.heap_size == 0) return;
-        if (this.heap_size == 0) {
-            //take heap2 fields
-//            this.anyRoot = heap2.anyRoot;
+        if (heap2 == null || heap2.min == null) {
+            return;
+        }
+        if (this.min == null) {
+            // Adopt heap2 completely.
+            this.firstRoot = heap2.firstRoot;
             this.min = heap2.min;
+            this.size = heap2.size;
+            this.numTrees = heap2.numTrees;
+            this.numMarked = heap2.numMarked;
+            this.totalLinks = heap2.totalLinks;
+            this.totalCuts = heap2.totalCuts;
+            this.totalHeapifyCosts = heap2.totalHeapifyCosts;
 
-            this.heap_size = heap2.heap_size;
-            this.num_trees = heap2.num_trees;
-
-            this.total_cuts += heap2.total_cuts;
-            this.total_links += heap2.total_links;
-            this.total_heapify_cost += heap2.total_heapify_cost;
-            this.num_marked_nodes += heap2.num_marked_nodes;
-
+            // Make heap2 unusable.
+            heap2.clear();
             return;
         }
 
-        // 1) concatenate root lists (Fibonacci-style)
-        concatLists(this.min.node, heap2.min.node);
+        // Merge histories (as required by PDF).
+        this.totalLinks += heap2.totalLinks;
+        this.totalCuts += heap2.totalCuts;
+        this.totalHeapifyCosts += heap2.totalHeapifyCosts;
 
-        // 2) update min in O(1)
-        if (heap2.min != null && (this.min == null || heap2.min.key < this.min.key)) {
+        // Merge sizes/statistics.
+        this.size += heap2.size;
+        this.numTrees += heap2.numTrees;
+        this.numMarked += heap2.numMarked;
+
+        // Concatenate root lists in O(1).
+        this.firstRoot = concatenateCircularLists(this.firstRoot, heap2.firstRoot);
+
+        // Update min.
+        if (heap2.min.key <= this.min.key) {
             this.min = heap2.min;
         }
 
-        // 3) merge counters/history
-        this.heap_size += heap2.heap_size;
-        this.num_trees += heap2.num_trees;
+        // Make heap2 unusable.
+        heap2.clear();
 
-        this.total_cuts += heap2.total_cuts;
-        this.total_links += heap2.total_links;
-        this.total_heapify_cost += heap2.total_heapify_cost;
-        this.num_marked_nodes += heap2.num_marked_nodes;
+        // If meld is non-lazy, consolidate immediately.
+        if (!this.lazyMelds) {
+            successiveLinking();
+        }
+    }
 
-        if (!lazyMelds) {
-            // After concatenating root lists, do successive linking immediately
-            consolidate(this.min.node);   // any root entry is fine; consolidate will rebuild min anyway
+
+    /** Return the number of elements in the heap. Runs in O(1). */
+    public int size() {
+        return this.size;
+    }
+
+
+    /** Return the number of trees in the heap. Runs in O(1). */
+    public int numTrees() {
+        return this.numTrees;
+    }
+
+
+    /** Return the number of marked nodes in the heap. Runs in O(1). */
+    public int numMarkedNodes() {
+        return this.numMarked;
+    }
+
+
+    /** Return the total number of links. Runs in O(1). */
+    public int totalLinks() {
+        return this.totalLinks;
+    }
+
+
+    /** Return the total number of cuts. Runs in O(1). */
+    public int totalCuts() {
+        return this.totalCuts;
+    }
+
+
+    /** Return the total heapify costs. Runs in O(1). */
+    public int totalHeapifyCosts() {
+        return this.totalHeapifyCosts;
+    }
+
+
+    /* ==================================================
+     *                  Helper methods
+     * ================================================== */
+
+    /** Clear this heap's pointers and counters (used to make heap2 unusable after meld). */
+    private void clear() {
+        this.min = null;
+        this.firstRoot = null;
+        this.size = 0;
+        this.numTrees = 0;
+        this.numMarked = 0;
+        this.totalLinks = 0;
+        this.totalCuts = 0;
+        this.totalHeapifyCosts = 0;
+    }
+
+
+    /** Remove a root node from the root list and update firstRoot if needed. Runs in O(1). */
+    private void removeRoot(HeapNode x) {
+        if (x == null) {
+            return;
+        }
+        if (x.next == x) {
+            // List becomes empty.
+            this.firstRoot = null;
+        } else {
+            x.prev.next = x.next;
+            x.next.prev = x.prev;
+            if (this.firstRoot == x) {
+                this.firstRoot = x.next;
+            }
+        }
+        x.next = x;
+        x.prev = x;
+    }
+
+
+    /** Splice an existing circular list of roots into this heap's root list in O(1). */
+    private void spliceRootList(HeapNode otherFirst) {
+        if (otherFirst == null) {
+            return;
+        }
+        if (this.firstRoot == null) {
+            this.firstRoot = otherFirst;
+            return;
+        }
+        this.firstRoot = concatenateCircularLists(this.firstRoot, otherFirst);
+    }
+
+
+    /** Concatenate two circular doubly-linked lists and return the resulting first pointer. */
+    private static HeapNode concatenateCircularLists(HeapNode a, HeapNode b) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+
+        HeapNode aNext = a.next;
+        HeapNode bPrev = b.prev;
+
+        a.next = b;
+        b.prev = a;
+
+        bPrev.next = aNext;
+        aNext.prev = bPrev;
+
+        return a;
+    }
+
+
+    /**
+     * Successive linking / consolidation.
+     * Rebuilds the root list so there is at most one tree of each rank.
+     *
+     * Worst-case time: O(numTrees + #links) = O(n) worst-case.
+     */
+    private void successiveLinking() {
+        if (this.firstRoot == null) {
+            this.min = null;
+            this.numTrees = 0;
+            return;
+        }
+
+        // Upper bound on rank: O(log n). We use log2(n)+2 as a safe bound.
+        int maxRank = 1;
+        int n = this.size;
+        while ((1 << maxRank) <= n && maxRank < 30) {
+            maxRank++;
+        }
+        maxRank += 2;
+
+        HeapNode[] buckets = new HeapNode[maxRank + 1];
+
+        // Iterate over the current roots and detach each root into singleton.
+        HeapNode start = this.firstRoot;
+        HeapNode w = start;
+        do {
+            HeapNode next = w.next;
+            w.next = w;
+            w.prev = w;
+
+            int d = w.rank;
+            while (buckets[d] != null) {
+                HeapNode y = buckets[d];
+                buckets[d] = null;
+                w = link(w, y);
+                this.totalLinks += 1;
+                d = w.rank;
+            }
+            buckets[d] = w;
+
+            w = next;
+        } while (w != start);
+
+        // Rebuild root list from buckets.
+        this.firstRoot = null;
+        this.min = null;
+        this.numTrees = 0;
+
+        for (int i = 0; i < buckets.length; i++) {
+            HeapNode x = buckets[i];
+            if (x == null) {
+                continue;
+            }
+            // Make sure x is a singleton root list.
+            x.parent = null;
+            x.next = x;
+            x.prev = x;
+
+            if (this.firstRoot == null) {
+                this.firstRoot = x;
+            } else {
+                this.firstRoot = concatenateCircularLists(this.firstRoot, x);
+            }
+
+            this.numTrees += 1;
+            if (this.min == null || x.item.key <= this.min.key) {
+                this.min = x.item;
+            }
         }
     }
 
 
     /**
-     * Return the number of elements in the heap
+     * Link two roots of the same rank and return the new root.
+     * Assumes x and y are both singleton roots (not inside a larger root list).
      */
-    public int size() {
-        return heap_size;
+    private HeapNode link(HeapNode x, HeapNode y) {
+        if (y.item.key < x.item.key) {
+            HeapNode tmp = x;
+            x = y;
+            y = tmp;
+        }
+
+        // y becomes a child of x.
+        y.parent = x;
+
+        // In Fibonacci-heap style, a node that becomes a child is unmarked.
+        if (y.marked) {
+            y.marked = false;
+            this.numMarked -= 1;
+        }
+
+        // Insert y into x's child list.
+        if (x.child == null) {
+            x.child = y;
+            y.next = y;
+            y.prev = y;
+        } else {
+            HeapNode c = x.child;
+            // Insert y right after c.
+            y.next = c.next;
+            y.prev = c;
+            c.next.prev = y;
+            c.next = y;
+        }
+
+        x.rank += 1;
+        return x;
     }
 
 
     /**
-     * Return the number of trees in the heap.
+     * HeapifyUp by swapping HeapItems with parents until heap order holds.
+     * Returns the number of swaps performed (the cost). Worst-case O(log n).
      */
-    public int numTrees() {
-        return num_trees;
+    private int heapifyUp(HeapNode v) {
+        int swaps = 0;
+        while (v.parent != null && v.item.key < v.parent.item.key) {
+            swapItems(v, v.parent);
+            swaps++;
+            v = v.parent;
+        }
+        return swaps;
+    }
+
+    private int heapifyUpForceEqual(HeapNode v) {
+        int swaps = 0;
+        while (v.parent != null && v.item.key <= v.parent.item.key) {
+            swapItems(v, v.parent);
+            swaps++;
+            v = v.parent;
+        }
+        return swaps;
+    }
+
+
+
+    /** Swap the HeapItem objects stored in two nodes and keep back pointers consistent. */
+    private static void swapItems(HeapNode a, HeapNode b) {
+        HeapItem tmp = a.item;
+        a.item = b.item;
+        b.item = tmp;
+
+        // keep back pointers consistent
+        a.item.node = a;
+        b.item.node = b;
+    }
+
+
+    /** Perform a cascading cut starting from node x (which violates heap order w.r.t its parent). */
+    private void cascadingCut(HeapNode x) {
+        HeapNode p = x.parent;
+        if (p == null) {
+            return;
+        }
+
+        cut(x);              // cut x from p and make it a root
+        this.totalCuts += 1; // counted (unlike deleteMin's child detach)
+
+        // After cut, x is a root.
+        if (x.item.key <= this.min.key) {
+            this.min = x.item;
+        }
+
+        // Cascading logic.
+        if (p.parent != null) {
+            if (!p.marked) {
+                p.marked = true;
+                this.numMarked += 1;
+            } else {
+                cascadingCut(p);
+            }
+        }
+
+        // Requirement: in non-lazy meld mode, every such "meld" (adding a cut tree)
+        // should trigger successive linking.
+        if (!this.lazyMelds) {
+            successiveLinking();
+        }
     }
 
 
     /**
-     * Return the number of marked nodes in the heap.
+     * Cut node x from its parent and add it to the root list.
+     * Runs in O(1).
      */
-    public int numMarkedNodes() {
-        return num_marked_nodes;
+    private void cut(HeapNode x) {
+        HeapNode p = x.parent;
+        if (p == null) {
+            return;
+        }
+
+        // Remove x from p's child list.
+        if (x.next == x) {
+            // x was the only child
+            p.child = null;
+        } else {
+            x.prev.next = x.next;
+            x.next.prev = x.prev;
+            if (p.child == x) {
+                p.child = x.next;
+            }
+        }
+        p.rank -= 1;
+
+        // x becomes a root
+        x.parent = null;
+
+        // Unmark x when it becomes a root.
+        if (x.marked) {
+            x.marked = false;
+            this.numMarked -= 1;
+        }
+
+        // Make x a singleton circular list.
+        x.next = x;
+        x.prev = x;
+
+        // Add x to the root list.
+        if (this.firstRoot == null) {
+            this.firstRoot = x;
+        } else {
+            this.firstRoot = concatenateCircularLists(this.firstRoot, x);
+        }
+        this.numTrees += 1;
     }
 
 
-    /**
-     * Return the total number of links.
-     */
-    public int totalLinks() {
-        return total_links;
-    }
-
-
-    /**
-     * Return the total number of cuts.
-     */
-    public int totalCuts() {
-        return total_cuts;
-    }
-
-
-    /**
-     * Return the total heapify costs.
-     */
-    public int totalHeapifyCosts() {
-        return total_heapify_cost;
-    }
-
+    /* ==================================================
+     *             Classes required by the skeleton
+     * ================================================== */
 
     /**
      * Class implementing a node in a Heap.
+     *
+     * IMPORTANT: We did not change any existing fields from the skeleton.
+     * We added only the 'marked' field.
      */
     public static class HeapNode {
         public HeapItem item;
@@ -611,13 +664,13 @@ public class Heap {
         public HeapNode next;
         public HeapNode prev;
         public HeapNode parent;
-        public int rank = 0;
-        public boolean marked = false;
+        public int rank;
+
+        // Added field (allowed by the assignment):
+        public boolean marked;
     }
 
-    /**
-     * Class implementing an item in a Heap.
-     */
+    /** Class implementing an item in a Heap. */
     public static class HeapItem {
         public HeapNode node;
         public int key;
