@@ -121,55 +121,89 @@ public class Heap {
      * Worst-case time: O(n) (because successive linking can be linear in worst case).
      * Amortized time (Fibonacci / lazy binomial style): O(log n).
      */
+    /**
+     * deleteMin:
+     * Lecture style:
+     * 1) remove the min root z from the root list
+     * 2) move all children of z to the root list (unmark + set parent=null)
+     * 3) successiveLinking() (consolidate)
+     */
     public void deleteMin() {
-        if (this.min == null) {
-            return;
-        }
+        if (this.min == null) return;
 
         HeapNode z = this.min.node;
-        int zRank = z.rank;
 
-        // If this was the only node in the heap.
+        // special case: heap has exactly one node
         if (this.size == 1) {
-            this.min = null;
-            this.firstRoot = null;
-            this.size = 0;
-            this.numTrees = 0;
-            this.numMarked = 0; // should already be 0
+            makeEmptyStructure();
             return;
         }
 
-        // Remove z from the root list.
+        removeMinRoot(z);
+        addMinChildrenToRootList(z);
+
+        // after removing min and exposing its children:
+        // must consolidate (successive linking)
+        successiveLinking();
+
+        // optional debug hooks if you added them:
+        // debugMinIsRoot("after deleteMin");
+        // debugCheckCircular(this.firstRoot, "root list after deleteMin", this.size + 10);
+        // debugCheckNumTrees("after deleteMin");
+    }
+    /**
+     * Step 1 of deleteMin: remove the min root z from the root list.
+     */
+    private void removeMinRoot(HeapNode z) {
+        // remove z from root list (O(1))
         removeRoot(z);
+
         this.size -= 1;
-        this.numTrees -= 1; // removing z tree
+        this.numTrees -= 1;
 
-        // Add z's children to the root list (WITHOUT increasing totalCuts!).
-        if (z.child != null) {
-            // Detach child list from z.
-            HeapNode childList = z.child;
-            z.child = null;
-            z.rank = 0;
-
-            // Unparent all children and unmark them.
-            HeapNode c = childList;
-            do {
-                c.parent = null;
-                if (c.marked) {
-                    c.marked = false;
-                    this.numMarked -= 1;
-                }
-                c = c.next;
-            } while (c != childList);
-
-            // Splice child roots into the root list.
-            spliceRootList(childList);
-            this.numTrees += zRank; // each child becomes a new tree
+        // disconnect z completely (not required, but cleaner)
+        z.next = z;
+        z.prev = z;
+    }
+    /**
+     * Step 2 of deleteMin: add all children of z to the root list.
+     * This is NOT counted as cuts.
+     */
+    private void addMinChildrenToRootList(HeapNode z) {
+        if (z.child == null) {
+            // no children to add
+            return;
         }
 
-        // Consolidate (successive linking) is ALWAYS required after deleteMin.
-        successiveLinking();
+        HeapNode childList = z.child;
+        int k = z.rank;     // number of children (how many trees we will add)
+
+        // detach children list from z
+        z.child = null;
+        z.rank = 0;
+
+        // for each child:
+        // parent <- null
+        // mark <- 0
+        HeapNode c = childList;
+        do {
+            c.parent = null;
+
+            if (c.marked) {
+                c.marked = false;
+                this.numMarked--;
+            }
+
+            c = c.next;
+        } while (c != childList);
+
+        // splice the entire child circular list into the root circular list
+        spliceRootList(childList);
+
+        // each child becomes a root => number of trees increases by k
+        this.numTrees += k;
     }
+
 
 
     /**
@@ -363,6 +397,20 @@ public class Heap {
         this.totalHeapifyCosts = 0;
     }
 
+    /**
+     * Clear only the CURRENT heap structure (make it empty),
+     * but DO NOT reset historical counters:
+     * totalLinks, totalCuts, totalHeapifyCosts.
+     */
+    private void makeEmptyStructure() {
+        this.min = null;
+        this.firstRoot = null;
+        this.size = 0;
+        this.numTrees = 0;
+        this.numMarked = 0;
+    }
+
+
 
     /** Remove a root node from the root list and update firstRoot if needed. Runs in O(1). */
     private void removeRoot(HeapNode x) {
@@ -425,6 +473,11 @@ public class Heap {
      *
      * Worst-case time: O(numTrees + #links) = O(n) worst-case.
      */
+    /**
+     * Consolidating / Successive Linking
+     * Exactly follows the lecture pseudo-code:
+     * consolidate(x) = toBuckets(x) + fromBuckets()
+     */
     private void successiveLinking() {
         if (this.firstRoot == null) {
             this.min = null;
@@ -432,64 +485,151 @@ public class Heap {
             return;
         }
 
-        // Upper bound on rank: O(log n). We use log2(n)+2 as a safe bound.
-        int maxRank = 1;
-        int n = this.size;
-        while ((1 << maxRank) <= n && maxRank < 30) {
-            maxRank++;
-        }
-        maxRank += 2;
+        // Step 1: allocate buckets B[0..log n]
+        int maxRank = upperBoundRank(this.size);
+        HeapNode[] B = new HeapNode[maxRank + 1];
 
-        HeapNode[] buckets = new HeapNode[maxRank + 1];
+        // Step 2: to-buckets(firstRoot)
+        toBuckets(B);
 
-        // Iterate over the current roots and detach each root into singleton.
-        HeapNode start = this.firstRoot;
-        HeapNode w = start;
-        do {
-            HeapNode next = w.next;
-            w.next = w;
-            w.prev = w;
+        // Step 3: from-buckets()
+        HeapNode minRoot = fromBuckets(B);
 
-            int d = w.rank;
-            while (buckets[d] != null) {
-                HeapNode y = buckets[d];
-                buckets[d] = null;
-                w = link(w, y);
-                this.totalLinks += 1;
-                d = w.rank;
-            }
-            buckets[d] = w;
+        // Update heap pointers/statistics
+        this.firstRoot = minRoot;           // convenient: firstRoot = minRoot
+        this.min = (minRoot == null ? null : minRoot.item);
+    }
 
-            w = next;
-        } while (w != start);
+    /**
+     * to-buckets(x) from the slide:
+     *
+     * for i=0..log_phi(n): B[i]=null
+     * x.prev.next = null   (break the circular root list)
+     * while x != null:
+     *     y = x
+     *     x = x.next
+     *     while B[y.rank] != null:
+     *         y = link(y, B[y.rank])
+     *         B[y.rank-1] = null
+     *     B[y.rank] = y
+     */
+    private void toBuckets(HeapNode[] B) {
+        // break circular root list -> turn it into a linear list
+        HeapNode head = breakRootCircularToLinear();
+        HeapNode x = head;
 
-        // Rebuild root list from buckets.
-        this.firstRoot = null;
-        this.min = null;
+        // we will rebuild numTrees later in fromBuckets(), so reset now
         this.numTrees = 0;
 
-        for (int i = 0; i < buckets.length; i++) {
-            HeapNode x = buckets[i];
-            if (x == null) {
-                continue;
-            }
-            // Make sure x is a singleton root list.
-            x.parent = null;
-            x.next = x;
-            x.prev = x;
+        while (x != null) {
+            HeapNode y = x;
+            x = x.next;      // advance in linear list
 
-            if (this.firstRoot == null) {
-                this.firstRoot = x;
-            } else {
-                this.firstRoot = concatenateCircularLists(this.firstRoot, x);
-            }
+            // isolate y as singleton root (important before linking)
+            y.next = y;
+            y.prev = y;
+            y.parent = null;
 
-            this.numTrees += 1;
-            if (this.min == null || x.item.key <= this.min.key) {
-                this.min = x.item;
+            int d = y.rank;
+            while (B[d] != null) {
+                HeapNode other = B[d];
+                B[d] = null;
+
+                // link y with other (same rank) => new root returned
+                y = link(y, other);
+                this.totalLinks++;
+
+                d = y.rank;
             }
+            B[d] = y;
         }
     }
+
+    /**
+     * from-buckets() from the slide:
+     *
+     * x = null
+     * for i=0..log_phi(n):
+     *     if B[i] != null:
+     *         if x == null:
+     *             x = B[i]
+     *             x.next = x
+     *             x.prev = x
+     *         else:
+     *             insert-after(x, B[i])
+     *             if B[i].key < x.key: x = B[i]
+     * return x
+     */
+    private HeapNode fromBuckets(HeapNode[] B) {
+        HeapNode x = null; // will become the minimum root
+        this.numTrees = 0;
+
+        for (int i = 0; i < B.length; i++) {
+            HeapNode r = B[i];
+            if (r == null) continue;
+
+            // ensure r is a clean root singleton
+            r.parent = null;
+            if (r.marked) {
+                r.marked = false;
+                this.numMarked--;
+            }
+            r.next = r;
+            r.prev = r;
+
+            if (x == null) {
+                x = r;
+            } else {
+                insertAfter(x, r); // O(1) splice into circular list
+                if (r.item.key < x.item.key) {
+                    x = r;
+                }
+            }
+            this.numTrees++;
+        }
+
+        return x;
+    }
+
+    /** O(1): insert singleton node 'b' after node 'a' in a circular doubly list */
+    private void insertAfter(HeapNode a, HeapNode b) {
+        // a ... a.next
+        b.next = a.next;
+        b.prev = a;
+        a.next.prev = b;
+        a.next = b;
+    }
+
+    /**
+     * Break the circular root list into a linear list and return the head.
+     * This matches the slide line: x.prev.next = null
+     */
+    private HeapNode breakRootCircularToLinear() {
+        HeapNode head = this.firstRoot;
+        if (head == null) return null;
+
+        HeapNode tail = head.prev;
+
+        // break circle: tail.next = null
+        tail.next = null;
+
+        // optional cleanup: head.prev = null (not required but clearer)
+        head.prev = null;
+
+        return head;
+    }
+
+    /** upper bound on possible rank: O(log n) */
+    private int upperBoundRank(int n) {
+        int r = 0;
+        int x = 1;
+        while (x <= n && r < 50) {
+            x <<= 1;
+            r++;
+        }
+        return r + 2;
+    }
+
 
 
     /**
@@ -569,83 +709,88 @@ public class Heap {
     }
 
 
-    /** Perform a cascading cut starting from node x (which violates heap order w.r.t its parent). */
-    private void cascadingCut(HeapNode x) {
-        HeapNode p = x.parent;
-        if (p == null) {
-            return;
-        }
+    /**
+     * cut(x,y) from the slide:
+     * Cut node x from its parent y and move x to the root list.
+     */
+    private void cut(HeapNode x, HeapNode y) {
+        // 1) detach x from y's child list
+        if (x.next == x) {
+            // x was the only child
+            y.child = null;
+        } else {
+            // remove x from circular sibling list
+            x.prev.next = x.next;
+            x.next.prev = x.prev;
 
-        cut(x);              // cut x from p and make it a root
-        this.totalCuts += 1; // counted (unlike deleteMin's child detach)
-
-        // After cut, x is a root.
-        if (x.item.key <= this.min.key) {
-            this.min = x.item;
-        }
-
-        // Cascading logic.
-        if (p.parent != null) {
-            if (!p.marked) {
-                p.marked = true;
-                this.numMarked += 1;
-            } else {
-                cascadingCut(p);
+            // if y.child was pointing to x, move it forward
+            if (y.child == x) {
+                y.child = x.next;
             }
         }
 
-        // Requirement: in non-lazy meld mode, every such "meld" (adding a cut tree)
-        // should trigger successive linking.
+        // 2) update y
+        y.rank--;
+
+        // 3) make x a root
+        x.parent = null;
+
+        // x.mark <- 0
+        if (x.marked) {
+            x.marked = false;
+            this.numMarked--;
+        }
+
+        // isolate x as singleton circular list
+        x.next = x;
+        x.prev = x;
+
+        // 4) add x to root list
+        if (this.firstRoot == null) {
+            this.firstRoot = x;
+        } else {
+            insertAfter(this.firstRoot, x);
+        }
+        this.numTrees++;
+
+        // update min if needed (now x is definitely a root)
+        if (this.min == null || x.item.key < this.min.key) {
+            this.min = x.item;
+        }
+    }
+
+    /**
+     * cascading-cut(x,y) from the slide:
+     * cut(x,y)
+     * if y.parent != null:
+     *    if y.mark == 0 -> y.mark=1
+     *    else cascading-cut(y, y.parent)
+     */
+    private void cascadingCut(HeapNode x) {
+        HeapNode y = x.parent;
+        if (y == null) return;
+
+        // cut(x,y)
+        cut(x, y);
+        this.totalCuts++;
+
+        // if y.parent != null then ...
+        HeapNode z = y.parent;
+        if (z != null) {
+            if (!y.marked) {
+                y.marked = true;
+                this.numMarked++;
+            } else {
+                cascadingCut(y);
+            }
+        }
+
+        // requirement: if melds are non-lazy, consolidate after each cut insertion
         if (!this.lazyMelds) {
             successiveLinking();
         }
     }
 
-
-    /**
-     * Cut node x from its parent and add it to the root list.
-     * Runs in O(1).
-     */
-    private void cut(HeapNode x) {
-        HeapNode p = x.parent;
-        if (p == null) {
-            return;
-        }
-
-        // Remove x from p's child list.
-        if (x.next == x) {
-            // x was the only child
-            p.child = null;
-        } else {
-            x.prev.next = x.next;
-            x.next.prev = x.prev;
-            if (p.child == x) {
-                p.child = x.next;
-            }
-        }
-        p.rank -= 1;
-
-        // x becomes a root
-        x.parent = null;
-
-        // Unmark x when it becomes a root.
-        if (x.marked) {
-            x.marked = false;
-            this.numMarked -= 1;
-        }
-
-        // Make x a singleton circular list.
-        x.next = x;
-        x.prev = x;
-
-        // Add x to the root list.
-        if (this.firstRoot == null) {
-            this.firstRoot = x;
-        } else {
-            this.firstRoot = concatenateCircularLists(this.firstRoot, x);
-        }
-        this.numTrees += 1;
-    }
 
 
     /* ==================================================
